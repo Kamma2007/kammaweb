@@ -1574,7 +1574,7 @@ function App() {
           {p[0].hand.map((c) => {
             const disabled = !game.isValidMove(0, c) || mustChooseTrump || isOver || pendingNextRound || pauseUi;
             return (
-              <button key={`${c.suit}-${c.value}`} disabled={disabled} onClick={() => onHumanPlay(c)}>
+              <button key={`${c.suit}-${c.value}`} className={!disabled ? "is-playable" : ""} disabled={disabled} onClick={() => onHumanPlay(c)}>
                 <img className="card-img" src={cardImageUrl(c)} alt="" />
               </button>
             );
@@ -1848,7 +1848,7 @@ function App() {
               {onlineGame.yourHand.map((c) => {
                 const disabled = !onlineValidSet.has(cardKey(c)) || onlineWaitingTrump || onlineIsOver || onlineGame.pendingNextRound || onlineMoveInFlight || onlineGame.currentPlayer !== onlineSeat;
                 return (
-                  <button key={`${c.suit}-${c.value}`} disabled={disabled} onClick={() => onlineOnPlay(c)}>
+                  <button key={`${c.suit}-${c.value}`} className={!disabled ? "is-playable" : ""} disabled={disabled} onClick={() => onlineOnPlay(c)}>
                     <img className="card-img" src={cardImageUrl(c)} alt="" />
                   </button>
                 );

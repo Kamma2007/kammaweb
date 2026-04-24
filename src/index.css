@@ -678,6 +678,15 @@ body {
   transform: translateY(2px);
 }
 
+.hand button.is-playable:not(:disabled) .card-img {
+  box-shadow: 0 0 0 2px rgba(255, 220, 120, 0.25), 0 12px 24px rgba(0, 0, 0, 0.4);
+  transform: translateY(-2px);
+}
+
+.hand button.is-playable:not(:disabled):active .card-img {
+  transform: translateY(1px);
+}
+
 .overlay {
   position: fixed;
   inset: 0;
