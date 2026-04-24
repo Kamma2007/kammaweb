@@ -466,7 +466,7 @@ function App() {
       sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
       return;
     }
-    sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.sessionToken ?? null });
+    sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.roomId === code ? session?.sessionToken ?? null : null });
   };
 
   const startOnlineQuick = () => {
@@ -491,6 +491,7 @@ function App() {
 
   useEffect(() => {
     const code = new URLSearchParams(location.search).get("room");
+    const rejoin = new URLSearchParams(location.search).get("rejoin");
     if (!code) return;
     if (autoJoinRef.current) return;
     autoJoinRef.current = true;
@@ -500,11 +501,20 @@ function App() {
     setOnlineError(null);
     setOnlineMoveInFlight(true);
     armOnlineRequestTimeout();
+    if (rejoin && String(rejoin).trim()) {
+      sendOnline({ type: "rejoin", roomId: String(code).trim().toUpperCase(), rejoinCode: String(rejoin).trim().toUpperCase() });
+      return;
+    }
     const session = loadOnlineSession();
     if (session?.roomId && session?.sessionToken && session.roomId === String(code).trim().toUpperCase()) {
       sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
     } else {
-      sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.sessionToken ?? null });
+      sendOnline({
+        type: "join_room",
+        name: onlineName,
+        roomId: code,
+        sessionToken: session?.roomId === String(code).trim().toUpperCase() ? session?.sessionToken ?? null : null,
+      });
     }
   }, [onlineName]);
 
@@ -815,6 +825,7 @@ function App() {
   const onlinePause = onlineRoom?.pause ?? null;
   const onlinePauseNow = onlineNow() + onlineClockTick * 0;
   const onlinePauseSeconds = onlinePause?.until ? Math.max(0, Math.ceil((Number(onlinePause.until) - onlinePauseNow) / 1000)) : 0;
+  const onlinePauseRejoinCode = typeof onlinePause?.rejoinCode === "string" ? onlinePause.rejoinCode.trim().toUpperCase() : null;
   const onlinePauseText =
     onlinePause?.phase === "waiting"
       ? `${onlinePause?.name ?? "Giocatore"} si è disconnesso`
@@ -1519,6 +1530,11 @@ function App() {
                 <div className="pill" style={{ display: "inline-block" }}>
                   {onlinePauseText}
                 </div>
+                {onlinePause.phase === "waiting" && onlinePauseRejoinCode ? (
+                  <div className="pill" style={{ display: "inline-block", marginTop: 10, whiteSpace: "normal" }}>
+                    Codice rientro: {onlinePauseRejoinCode}
+                  </div>
+                ) : null}
                 {onlinePause.phase === "waiting" ? (
                   <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
                     Rientro entro {onlinePauseSeconds}s
@@ -1531,6 +1547,29 @@ function App() {
                 {onlinePause.phase === "kicked" && onlinePause.botName ? (
                   <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
                     Inserito {onlinePause.botName} (Pro)
+                  </div>
+                ) : null}
+                {onlinePause.phase === "waiting" && onlinePauseRejoinCode ? (
+                  <div className="modal-actions" style={{ justifyContent: "center" }}>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        navigator.clipboard?.writeText?.(onlinePauseRejoinCode);
+                      }}
+                    >
+                      Copia codice rientro
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const u = new URL(location.href);
+                        u.searchParams.set("room", String(onlineRoom?.roomId ?? "").trim().toUpperCase());
+                        u.searchParams.set("rejoin", onlinePauseRejoinCode);
+                        navigator.clipboard?.writeText?.(u.toString());
+                      }}
+                    >
+                      Copia link rientro
+                    </button>
                   </div>
                 ) : null}
               </div>

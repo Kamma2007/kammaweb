@@ -54,6 +54,10 @@ function sessionToken() {
   return crypto.randomBytes(16).toString("hex");
 }
 
+function rejoinCode() {
+  return crypto.randomBytes(4).toString("hex").toUpperCase();
+}
+
 function isCard(obj) {
   return obj && typeof obj === "object" && typeof obj.suit === "string" && (typeof obj.value === "string" || typeof obj.value === "number");
 }
@@ -227,6 +231,7 @@ function broadcastRoom(room) {
             name: room.pause.name,
             until: room.pause.until,
             botName: room.pause.botName ?? null,
+            rejoinCode: room.pause.rejoinCode ?? null,
           }
         : null,
       game: room.engine ? viewState(room.engine, p.seat) : null,
@@ -247,6 +252,17 @@ function startResumeCountdown(room, payload) {
   clearPause(room);
   room.pause = payload;
   broadcastRoom(room);
+  room.pauseTimer = setTimeout(() => {
+    room.pauseTimer = null;
+    room.pause = null;
+    broadcastRoom(room);
+    scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+  }, RESUME_COUNTDOWN_MS);
+}
+
+function beginResumeCountdown(room, seat, name) {
+  clearPause(room);
+  room.pause = { phase: "resume", seat, name, until: now() + RESUME_COUNTDOWN_MS, botName: null, rejoinCode: null };
   room.pauseTimer = setTimeout(() => {
     room.pauseTimer = null;
     room.pause = null;
@@ -277,7 +293,7 @@ function pauseForDisconnect(room, seat, name) {
   if (room.pause) return;
   stopBotRunner(room);
   const until = now() + RECONNECT_WINDOW_MS;
-  room.pause = { phase: "waiting", seat, name, until, botName: null };
+  room.pause = { phase: "waiting", seat, name, until, botName: null, rejoinCode: rejoinCode() };
   broadcastRoom(room);
   room.kickTimer = setTimeout(() => {
     room.kickTimer = null;
@@ -505,15 +521,52 @@ wss.on("connection", (ws) => {
           // ignore
         }
       }
-      attachClientToRoom(ws, room, player.seat, player.name, player.token);
       if (room.started) {
         if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
-          startResumeCountdown(room, { phase: "resume", seat: player.seat, name: player.name, until: now() + RESUME_COUNTDOWN_MS, botName: null });
+          beginResumeCountdown(room, player.seat, player.name);
+          attachClientToRoom(ws, room, player.seat, player.name, player.token);
         } else {
+          attachClientToRoom(ws, room, player.seat, player.name, player.token);
           broadcastRoom(room);
           scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
         }
+      } else {
+        attachClientToRoom(ws, room, player.seat, player.name, player.token);
       }
+      return;
+    }
+
+    if (msg.type === "rejoin") {
+      const roomId = typeof msg.roomId === "string" ? msg.roomId.trim().toUpperCase() : "";
+      const code = typeof msg.rejoinCode === "string" ? msg.rejoinCode.trim().toUpperCase() : "";
+      const room = rooms.get(roomId);
+      if (!room || !code) {
+        json(ws, { type: "error", message: "Codice rientro non valido" });
+        return;
+      }
+      if (!room.pause || room.pause.phase !== "waiting") {
+        json(ws, { type: "error", message: "Rientro non disponibile" });
+        return;
+      }
+      if (String(room.pause.rejoinCode ?? "").toUpperCase() !== code) {
+        json(ws, { type: "error", message: "Codice rientro errato" });
+        return;
+      }
+      const seat = room.pause.seat;
+      const player = room.players.find((p) => p.seat === seat);
+      if (!player || player.kicked) {
+        json(ws, { type: "error", message: "Giocatore non disponibile" });
+        return;
+      }
+      if (player.ws && player.ws !== ws) {
+        try {
+          player.ws.close();
+        } catch {
+          // ignore
+        }
+      }
+      beginResumeCountdown(room, player.seat, player.name);
+      attachClientToRoom(ws, room, player.seat, player.name, player.token);
       return;
     }
 
@@ -602,6 +655,7 @@ wss.on("connection", (ws) => {
         json(ws, { type: "error", message: "Room non trovata" });
         return;
       }
+      const joinName = typeof msg.name === "string" ? msg.name.trim().slice(0, 16) : "";
       const session = typeof msg.sessionToken === "string" ? msg.sessionToken.trim() : "";
       if (room.started && session) {
         const player = room.players.find((p) => p.token === session);
@@ -613,14 +667,40 @@ wss.on("connection", (ws) => {
               // ignore
             }
           }
-          attachClientToRoom(ws, room, player.seat, player.name, player.token);
           if (room.started) {
             if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
-              startResumeCountdown(room, { phase: "resume", seat: player.seat, name: player.name, until: now() + RESUME_COUNTDOWN_MS, botName: null });
+              beginResumeCountdown(room, player.seat, player.name);
+              attachClientToRoom(ws, room, player.seat, player.name, player.token);
             } else {
+              attachClientToRoom(ws, room, player.seat, player.name, player.token);
               broadcastRoom(room);
               scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
             }
+          }
+          return;
+        }
+      }
+      if (room.started && joinName) {
+        const found = room.players.find((p) => !p.kicked && String(p.name ?? "").trim().toLowerCase() === joinName.toLowerCase());
+        if (found) {
+          if (found.connected) {
+            json(ws, { type: "error", message: "Giocatore già connesso" });
+            return;
+          }
+          if (found.ws && found.ws !== ws) {
+            try {
+              found.ws.close();
+            } catch {
+              // ignore
+            }
+          }
+          if (room.pause?.phase === "waiting" && room.pause.seat === found.seat) {
+            beginResumeCountdown(room, found.seat, found.name);
+            attachClientToRoom(ws, room, found.seat, found.name, found.token);
+          } else {
+            attachClientToRoom(ws, room, found.seat, found.name, found.token);
+            broadcastRoom(room);
+            scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
           }
           return;
         }
@@ -635,7 +715,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      const name = typeof msg.name === "string" ? msg.name.trim().slice(0, 16) : "Giocatore";
+      const name = joinName || "Giocatore";
       const seat = claimSeat(room);
       if (seat === null) {
         json(ws, { type: "error", message: "Room piena" });
