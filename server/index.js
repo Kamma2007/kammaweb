@@ -497,6 +497,16 @@ wss.on("connection", (ws) => {
 
     if (!msg || typeof msg !== "object") return;
 
+    if (msg.type === "ping") {
+      const info = clientInfo.get(ws);
+      if (info) {
+        const room = rooms.get(info.roomId);
+        if (room) room.lastActivityAt = now();
+      }
+      json(ws, { type: "pong", at: now() });
+      return;
+    }
+
     if (msg.type === "resume") {
       const roomId = typeof msg.roomId === "string" ? msg.roomId.trim().toUpperCase() : "";
       const token = typeof msg.sessionToken === "string" ? msg.sessionToken.trim() : "";

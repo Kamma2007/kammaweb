@@ -216,10 +216,12 @@ function App() {
   const [onlineConnected, setOnlineConnected] = useState(false);
   const [onlineShowResolvedTrick, setOnlineShowResolvedTrick] = useState(false);
   const [onlineSessionToken, setOnlineSessionToken] = useState(() => loadOnlineSession()?.sessionToken ?? null);
+  const [onlineRejoinCodeInput, setOnlineRejoinCodeInput] = useState("");
   const lastOnlineServerTimeRef = useRef(0);
   const lastOnlineClientTimeRef = useRef(0);
   const [onlineClockTick, setOnlineClockTick] = useState(0);
   const wsRef = useRef(null);
+  const onlinePingTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const autoJoinRef = useRef(false);
   const onlineActiveRef = useRef(false);
@@ -293,6 +295,10 @@ function App() {
     }
     clearOnlineRequestTimeout();
     pendingOnlinePayloadRef.current = null;
+    if (onlinePingTimerRef.current) {
+      clearInterval(onlinePingTimerRef.current);
+      onlinePingTimerRef.current = null;
+    }
     const ws = wsRef.current;
     wsRef.current = null;
     if (ws) ws.close();
@@ -316,6 +322,17 @@ function App() {
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (!onlinePingTimerRef.current) {
+        onlinePingTimerRef.current = setInterval(() => {
+          const cur = wsRef.current;
+          if (!cur || cur.readyState !== WebSocket.OPEN) return;
+          try {
+            cur.send(JSON.stringify({ type: "ping", at: Date.now() }));
+          } catch {
+            // ignore
+          }
+        }, 10000);
       }
       const pending = pendingOnlinePayloadRef.current;
       if (pending) {
@@ -378,12 +395,20 @@ function App() {
       setOnlineMoveInFlight(false);
       setOnlineConnected(false);
       setOnlineError(`Connessione al server on line non riuscita (WS: ${onlineWsUrl()}).`);
+      if (onlinePingTimerRef.current) {
+        clearInterval(onlinePingTimerRef.current);
+        onlinePingTimerRef.current = null;
+      }
     };
     ws.onclose = () => {
       wsRef.current = null;
       setOnlineRoom(null);
       setOnlineMoveInFlight(false);
       setOnlineConnected(false);
+      if (onlinePingTimerRef.current) {
+        clearInterval(onlinePingTimerRef.current);
+        onlinePingTimerRef.current = null;
+      }
       const hasPending = Boolean(pendingOnlinePayloadRef.current);
       const session = loadOnlineSession();
       if (!onlineActiveRef.current && !hasPending && (!session?.roomId || !session?.sessionToken)) return;
@@ -466,6 +491,11 @@ function App() {
     const session = loadOnlineSession();
     if (session?.roomId && session?.sessionToken && session.roomId === code) {
       sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
+      return;
+    }
+    const rejoinCode = onlineRejoinCodeInput.trim().toUpperCase();
+    if (rejoinCode) {
+      sendOnline({ type: "rejoin", roomId: code, rejoinCode });
       return;
     }
     sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.roomId === code ? session?.sessionToken ?? null : null });
@@ -865,6 +895,26 @@ function App() {
               <button className="btn menu-btn" onClick={() => setShowHistory(true)}>
                 Visualizza storico partite
               </button>
+              {(() => {
+                const s = loadOnlineSession();
+                if (!s?.roomId || !s?.sessionToken) return null;
+                return (
+                  <button
+                    className="btn menu-btn"
+                    onClick={() => {
+                      setOnlineError(null);
+                      setOnlineTab("join");
+                      setOnlineJoinCode(String(s.roomId).trim().toUpperCase());
+                      setShowOnlineSetup(true);
+                      setOnlineMoveInFlight(true);
+                      armOnlineRequestTimeout();
+                      sendOnline({ type: "resume", roomId: s.roomId, sessionToken: s.sessionToken });
+                    }}
+                  >
+                    Rientra in partita
+                  </button>
+                );
+              })()}
               <button
                 className="btn menu-btn"
                 onClick={() => {
@@ -1154,6 +1204,10 @@ function App() {
                       <div className="score-name">Codice room</div>
                       <input className="select" value={onlineJoinCode} onChange={(e) => setOnlineJoinCode(e.target.value)} placeholder="Es. A1B2C3" />
                     </div>
+                    <div className="score-row" style={{ gridTemplateColumns: "1fr auto", alignItems: "center" }}>
+                      <div className="score-name">Codice rientro</div>
+                      <input className="select" value={onlineRejoinCodeInput} onChange={(e) => setOnlineRejoinCodeInput(e.target.value)} placeholder="Es. 1A2B3C4D" />
+                    </div>
                   </div>
                 )}
 
@@ -1167,6 +1221,9 @@ function App() {
                   (() => {
                     const s = loadOnlineSession();
                     if (!s?.roomId || !s?.sessionToken) return null;
+                    const url = new URL(location.origin);
+                    url.searchParams.set("room", String(s.roomId).trim().toUpperCase());
+                    url.searchParams.set("session", String(s.sessionToken).trim());
                     return (
                       <div className="pill" style={{ display: "inline-block", marginTop: 10, whiteSpace: "normal" }}>
                         Partita salvata: {s.roomId}
@@ -1180,6 +1237,22 @@ function App() {
                             }}
                           >
                             Rientra
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => {
+                              navigator.clipboard?.writeText?.(String(s.roomId).trim().toUpperCase());
+                            }}
+                          >
+                            Copia codice
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => {
+                              navigator.clipboard?.writeText?.(url.toString());
+                            }}
+                          >
+                            Copia link rientro
                           </button>
                         </div>
                       </div>
