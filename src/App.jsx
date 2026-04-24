@@ -374,8 +374,10 @@ function App() {
       }
     };
     ws.onerror = () => {
+      clearOnlineRequestTimeout();
+      setOnlineMoveInFlight(false);
       setOnlineConnected(false);
-      setOnlineError("Connessione al server on line non riuscita.");
+      setOnlineError(`Connessione al server on line non riuscita (WS: ${onlineWsUrl()}).`);
     };
     ws.onclose = () => {
       wsRef.current = null;
@@ -492,6 +494,7 @@ function App() {
   useEffect(() => {
     const code = new URLSearchParams(location.search).get("room");
     const rejoin = new URLSearchParams(location.search).get("rejoin");
+    const sessionFromUrl = new URLSearchParams(location.search).get("session");
     if (!code) return;
     if (autoJoinRef.current) return;
     autoJoinRef.current = true;
@@ -501,6 +504,10 @@ function App() {
     setOnlineError(null);
     setOnlineMoveInFlight(true);
     armOnlineRequestTimeout();
+    if (sessionFromUrl && String(sessionFromUrl).trim()) {
+      sendOnline({ type: "resume", roomId: String(code).trim().toUpperCase(), sessionToken: String(sessionFromUrl).trim() });
+      return;
+    }
     if (rejoin && String(rejoin).trim()) {
       sendOnline({ type: "rejoin", roomId: String(code).trim().toUpperCase(), rejoinCode: String(rejoin).trim().toUpperCase() });
       return;
@@ -1156,6 +1163,30 @@ function App() {
                   </div>
                 ) : null}
 
+                {!onlineRoom ? (
+                  (() => {
+                    const s = loadOnlineSession();
+                    if (!s?.roomId || !s?.sessionToken) return null;
+                    return (
+                      <div className="pill" style={{ display: "inline-block", marginTop: 10, whiteSpace: "normal" }}>
+                        Partita salvata: {s.roomId}
+                        <div className="modal-actions" style={{ justifyContent: "center", marginTop: 10 }}>
+                          <button
+                            className="btn"
+                            onClick={() => {
+                              setOnlineMoveInFlight(true);
+                              armOnlineRequestTimeout();
+                              sendOnline({ type: "resume", roomId: s.roomId, sessionToken: s.sessionToken });
+                            }}
+                          >
+                            Rientra
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : null}
+
                 <div className="modal-actions">
                   <button className="btn" onClick={closeOnline}>
                     Indietro
@@ -1517,6 +1548,27 @@ function App() {
               <div className="pill">
                 {onlinePlayersUi[0].name}: {onlinePlayersUi[0].score} · {onlinePlayersUi[1].name}: {onlinePlayersUi[1].score} · {onlinePlayersUi[2].name}: {onlinePlayersUi[2].score} · {onlinePlayersUi[3].name}: {onlinePlayersUi[3].score}
               </div>
+              <button
+                className="btn"
+                onClick={() => {
+                  if (!onlineRoom?.roomId) return;
+                  navigator.clipboard?.writeText?.(onlineRoom.roomId);
+                }}
+              >
+                Copia codice
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  if (!onlineRoom?.roomId || !onlineSessionToken) return;
+                  const u = new URL(location.origin);
+                  u.searchParams.set("room", String(onlineRoom.roomId).trim().toUpperCase());
+                  u.searchParams.set("session", String(onlineSessionToken).trim());
+                  navigator.clipboard?.writeText?.(u.toString());
+                }}
+              >
+                Copia link rientro
+              </button>
               <button className="btn" onClick={closeOnline}>
                 Esci
               </button>
