@@ -466,7 +466,7 @@ function App() {
       sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
       return;
     }
-    sendOnline({ type: "join_room", name: onlineName, roomId: code });
+    sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.sessionToken ?? null });
   };
 
   const startOnlineQuick = () => {
@@ -504,7 +504,7 @@ function App() {
     if (session?.roomId && session?.sessionToken && session.roomId === String(code).trim().toUpperCase()) {
       sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
     } else {
-      sendOnline({ type: "join_room", name: onlineName, roomId: code });
+      sendOnline({ type: "join_room", name: onlineName, roomId: code, sessionToken: session?.sessionToken ?? null });
     }
   }, [onlineName]);
 

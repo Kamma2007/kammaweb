@@ -602,6 +602,29 @@ wss.on("connection", (ws) => {
         json(ws, { type: "error", message: "Room non trovata" });
         return;
       }
+      const session = typeof msg.sessionToken === "string" ? msg.sessionToken.trim() : "";
+      if (room.started && session) {
+        const player = room.players.find((p) => p.token === session);
+        if (player && !player.kicked) {
+          if (player.ws && player.ws !== ws) {
+            try {
+              player.ws.close();
+            } catch {
+              // ignore
+            }
+          }
+          attachClientToRoom(ws, room, player.seat, player.name, player.token);
+          if (room.started) {
+            if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
+              startResumeCountdown(room, { phase: "resume", seat: player.seat, name: player.name, until: now() + RESUME_COUNTDOWN_MS, botName: null });
+            } else {
+              broadcastRoom(room);
+              scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+            }
+          }
+          return;
+        }
+      }
       if (room.started) {
         json(ws, { type: "error", message: "Partita già iniziata" });
         return;
