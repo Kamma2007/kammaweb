@@ -214,7 +214,11 @@ function App() {
   const [onlineError, setOnlineError] = useState(null);
   const [onlineMoveInFlight, setOnlineMoveInFlight] = useState(false);
   const [onlineConnected, setOnlineConnected] = useState(false);
+  const [onlineShowResolvedTrick, setOnlineShowResolvedTrick] = useState(false);
   const [onlineSessionToken, setOnlineSessionToken] = useState(() => loadOnlineSession()?.sessionToken ?? null);
+  const lastOnlineServerTimeRef = useRef(0);
+  const lastOnlineClientTimeRef = useRef(0);
+  const [onlineClockTick, setOnlineClockTick] = useState(0);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const autoJoinRef = useRef(false);
@@ -344,6 +348,8 @@ function App() {
         clearOnlineRequestTimeout();
         setOnlineMoveInFlight(false);
         setOnlineError(null);
+        lastOnlineServerTimeRef.current = Number(msg.serverTime ?? Date.now());
+        lastOnlineClientTimeRef.current = Date.now();
         if (msg.sessionToken && msg.roomId) {
           saveOnlineSession({ roomId: msg.roomId, sessionToken: msg.sessionToken, name: onlineName });
           setOnlineSessionToken(msg.sessionToken);
@@ -357,6 +363,7 @@ function App() {
           maxHumans: msg.maxHumans,
           humans: msg.humans ?? [],
           started: Boolean(msg.started),
+          pause: msg.pause ?? null,
           game: msg.game ?? null,
         });
         if (msg.started) {
@@ -396,6 +403,20 @@ function App() {
       ws.send(data);
     }
   };
+
+  const onlineNow = () => {
+    const base = Number(lastOnlineServerTimeRef.current ?? 0);
+    const at = Number(lastOnlineClientTimeRef.current ?? 0);
+    if (!base || !at) return Date.now();
+    return base + (Date.now() - at);
+  };
+
+  useEffect(() => {
+    if (screen !== "onlineGame") return;
+    if (!onlineRoom?.pause) return;
+    const t = setInterval(() => setOnlineClockTick((v) => v + 1), 250);
+    return () => clearInterval(t);
+  }, [screen, onlineRoom?.pause?.phase, onlineRoom?.pause?.until]);
 
   const clearTimers = () => {
     timersRef.current.forEach((t) => clearTimeout(t));
@@ -439,7 +460,13 @@ function App() {
     setOnlineError(null);
     setOnlineMoveInFlight(true);
     armOnlineRequestTimeout();
-    sendOnline({ type: "join_room", name: onlineName, roomId: onlineJoinCode });
+    const code = onlineJoinCode.trim().toUpperCase();
+    const session = loadOnlineSession();
+    if (session?.roomId && session?.sessionToken && session.roomId === code) {
+      sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
+      return;
+    }
+    sendOnline({ type: "join_room", name: onlineName, roomId: code });
   };
 
   const startOnlineQuick = () => {
@@ -473,7 +500,12 @@ function App() {
     setOnlineError(null);
     setOnlineMoveInFlight(true);
     armOnlineRequestTimeout();
-    sendOnline({ type: "join_room", name: onlineName, roomId: code });
+    const session = loadOnlineSession();
+    if (session?.roomId && session?.sessionToken && session.roomId === String(code).trim().toUpperCase()) {
+      sendOnline({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken });
+    } else {
+      sendOnline({ type: "join_room", name: onlineName, roomId: code });
+    }
   }, [onlineName]);
 
   const performMove = async ({ playerIndex, card, type }) => {
@@ -663,8 +695,17 @@ function App() {
     return true;
   };
 
+  useEffect(() => {
+    if (screen !== "onlineGame") return;
+    if (!onlineGame?.lastTrickResolvedAt) return;
+    setOnlineShowResolvedTrick(true);
+    const t = setTimeout(() => setOnlineShowResolvedTrick(false), 2000);
+    return () => clearTimeout(t);
+  }, [screen, onlineGame?.lastTrickResolvedAt]);
+
   const onlineOnPlay = (card) => {
     if (!onlineGame || onlineMoveInFlight) return;
+    if (onlineRoom?.pause) return;
     if (onlineWaitingTrump) return;
     if (onlineGame.currentPlayer !== onlineSeat) return;
     if (!onlineValidSet.has(cardKey(card))) return;
@@ -675,6 +716,7 @@ function App() {
   const onlineOnPass = () => {
     if (!onlineIsDomino) return;
     if (!onlineGame || onlineMoveInFlight) return;
+    if (onlineRoom?.pause) return;
     if (onlineWaitingTrump) return;
     if (onlineGame.currentPlayer !== onlineSeat) return;
     setOnlineMoveInFlight(true);
@@ -683,6 +725,7 @@ function App() {
 
   const onlineNextRound = () => {
     if (!onlineGame || onlineMoveInFlight) return;
+    if (onlineRoom?.pause) return;
     if (!onlineGame.pendingNextRound) return;
     setOnlineMoveInFlight(true);
     sendOnline({ type: "action", action: { type: "next_round" } });
@@ -690,6 +733,7 @@ function App() {
 
   const onlineChooseTrump = (suit) => {
     if (!onlineGame || onlineMoveInFlight) return;
+    if (onlineRoom?.pause) return;
     if (!onlineMustChooseTrump) return;
     setOnlineMoveInFlight(true);
     sendOnline({ type: "action", action: { type: "choose_trump", suit } });
@@ -767,6 +811,18 @@ function App() {
     if (found?.name) return found.name;
     return `Bot${seat + 1}`;
   };
+
+  const onlinePause = onlineRoom?.pause ?? null;
+  const onlinePauseNow = onlineNow() + onlineClockTick * 0;
+  const onlinePauseSeconds = onlinePause?.until ? Math.max(0, Math.ceil((Number(onlinePause.until) - onlinePauseNow) / 1000)) : 0;
+  const onlinePauseText =
+    onlinePause?.phase === "waiting"
+      ? `${onlinePause?.name ?? "Giocatore"} si è disconnesso`
+      : onlinePause?.phase === "resume"
+        ? `${onlinePause?.name ?? "Giocatore"} riconnesso`
+        : onlinePause?.phase === "kicked"
+          ? `${onlinePause?.name ?? "Giocatore"} espulso per time-out`
+          : "Partita in pausa";
   const onlineLobbyDealerSeat = Number.isFinite(Number(onlineRoom?.dealerSeat)) ? Number(onlineRoom?.dealerSeat) : 0;
   const onlineLobbyFirstSeat = nextSeatToRight(onlineLobbyDealerSeat);
 
@@ -1456,6 +1512,31 @@ function App() {
             </div>
           </div>
 
+          {onlinePause ? (
+            <div className="overlay">
+              <div className="modal">
+                <h3>Partita in pausa</h3>
+                <div className="pill" style={{ display: "inline-block" }}>
+                  {onlinePauseText}
+                </div>
+                {onlinePause.phase === "waiting" ? (
+                  <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
+                    Rientro entro {onlinePauseSeconds}s
+                  </div>
+                ) : (
+                  <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
+                    Riparte in {onlinePauseSeconds}…
+                  </div>
+                )}
+                {onlinePause.phase === "kicked" && onlinePause.botName ? (
+                  <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
+                    Inserito {onlinePause.botName} (Pro)
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div className="arena">
             <div className="player pos-top">
               <div className={`name ${onlineSeatToUi(onlineGame.currentPlayer) === 2 ? "active-player" : ""}`}>{onlinePlayersUi[2].name} ({onlinePlayersUi[2].score}){onlineSeatToUi(onlineGame.currentPlayer) === 2 ? " · turno" : ""}</div>
@@ -1501,7 +1582,10 @@ function App() {
                 <DominoTable domino={onlineGame.domino} />
               ) : (
                 <TrickGrid
-                  trick={(onlineGame.trick ?? []).map((t) => ({ ...t, player: onlineSeatToUi(t.player) }))}
+                  trick={((onlineShowResolvedTrick && onlineGame.lastResolvedTrick?.length ? onlineGame.lastResolvedTrick : onlineGame.trick) ?? []).map((t) => ({
+                    ...t,
+                    player: onlineSeatToUi(t.player),
+                  }))}
                   slotRefs={null}
                 />
               )}

@@ -11,6 +11,10 @@ const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 const ROOM_IDLE_TTL_MS = 15 * 60 * 1000;
 const SUITS = new Set(["hearts", "diamonds", "clubs", "spades"]);
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
+const BOT_MOVE_DELAY_MS = 700;
+const BOT_TRICK_PAUSE_MS = 2000;
+const RECONNECT_WINDOW_MS = 60 * 1000;
+const RESUME_COUNTDOWN_MS = 3 * 1000;
 
 function now() {
   return Date.now();
@@ -117,39 +121,87 @@ function viewState(engine, viewerSeat) {
   };
 }
 
-function advanceBots(room) {
+function isConnectedHuman(room, seat) {
+  if (!room.humanSeats.has(seat)) return false;
+  const p = room.players.find((x) => x.seat === seat);
+  return Boolean(p?.connected);
+}
+
+function stopBotRunner(room) {
+  if (room.botTimer) clearTimeout(room.botTimer);
+  room.botTimer = null;
+  room.botRunning = false;
+}
+
+function scheduleBotRunner(room, delayMs = 0) {
+  if (!room.started || !room.engine) return;
+  if (room.botTimer) return;
+  room.botRunning = true;
+  room.botTimer = setTimeout(() => {
+    room.botTimer = null;
+    runBotStep(room);
+  }, Math.max(0, delayMs));
+}
+
+function runBotStep(room) {
   const engine = room.engine;
-  if (!engine) return;
-
-  const isConnectedHuman = (seat) => {
-    if (!room.humanSeats.has(seat)) return false;
-    const p = room.players.find((x) => x.seat === seat);
-    return Boolean(p?.connected);
-  };
-
-  while (!engine.isGameOver() && !engine.roundOver) {
-    if (mustChooseTrump(engine, room.humanSeats)) {
-      const chooser = engine.declarationChooser;
-      if (typeof chooser === "number" && room.humanSeats.has(chooser) && !isConnectedHuman(chooser)) {
-        engine.trumpSuit = engine.chooseTrumpSuitBot(chooser);
-        continue;
-      }
-      return;
-    }
-
-    if (room.humanSeats.has(engine.currentPlayer) && isConnectedHuman(engine.currentPlayer)) return;
-
-    const seat = engine.currentPlayer;
-    const card = engine.pickBotCard(seat);
-    if (!card) {
-      if (engine.currentRound === "DOMINO") {
-        engine.playDominoPass(seat);
-        continue;
-      }
-      return;
-    }
-    engine.playCard(seat, card);
+  if (!room.started || !engine) {
+    stopBotRunner(room);
+    return;
   }
+  if (room.pause) {
+    stopBotRunner(room);
+    return;
+  }
+  if (engine.isGameOver() || engine.roundOver || engine.pendingNextRound) {
+    stopBotRunner(room);
+    return;
+  }
+
+  if (mustChooseTrump(engine, room.humanSeats)) {
+    const chooser = engine.declarationChooser;
+    if (typeof chooser === "number" && room.humanSeats.has(chooser) && !isConnectedHuman(room, chooser)) {
+      engine.trumpSuit = engine.chooseTrumpSuitBot(chooser);
+      room.lastActivityAt = now();
+      broadcastRoom(room);
+      scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+      return;
+    }
+    stopBotRunner(room);
+    return;
+  }
+
+  const seat = engine.currentPlayer;
+  if (room.humanSeats.has(seat) && isConnectedHuman(room, seat)) {
+    stopBotRunner(room);
+    return;
+  }
+
+  const prevResolvedAt = engine.lastTrickResolvedAt;
+  const card = engine.pickBotCard(seat);
+  if (!card) {
+    if (engine.currentRound === "DOMINO") {
+      engine.playDominoPass(seat);
+      room.lastActivityAt = now();
+      broadcastRoom(room);
+      scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+      return;
+    }
+    stopBotRunner(room);
+    return;
+  }
+
+  engine.playCard(seat, card);
+  room.lastActivityAt = now();
+  broadcastRoom(room);
+
+  if (engine.isGameOver() || engine.roundOver || engine.pendingNextRound) {
+    stopBotRunner(room);
+    return;
+  }
+
+  const resolvedNow = Boolean(engine.lastTrickResolvedAt && engine.lastTrickResolvedAt !== prevResolvedAt);
+  scheduleBotRunner(room, resolvedNow ? BOT_TRICK_PAUSE_MS : BOT_MOVE_DELAY_MS);
 }
 
 function broadcastRoom(room) {
@@ -168,10 +220,70 @@ function broadcastRoom(room) {
         .filter((x) => room.humanSeats.has(x.seat))
         .map((x) => ({ seat: x.seat, name: x.name, connected: Boolean(x.connected) })),
       started: room.started,
+      pause: room.pause
+        ? {
+            phase: room.pause.phase,
+            seat: room.pause.seat,
+            name: room.pause.name,
+            until: room.pause.until,
+            botName: room.pause.botName ?? null,
+          }
+        : null,
       game: room.engine ? viewState(room.engine, p.seat) : null,
       serverTime: now(),
     });
   });
+}
+
+function clearPause(room) {
+  if (room.pauseTimer) clearTimeout(room.pauseTimer);
+  if (room.kickTimer) clearTimeout(room.kickTimer);
+  room.pauseTimer = null;
+  room.kickTimer = null;
+  room.pause = null;
+}
+
+function startResumeCountdown(room, payload) {
+  clearPause(room);
+  room.pause = payload;
+  broadcastRoom(room);
+  room.pauseTimer = setTimeout(() => {
+    room.pauseTimer = null;
+    room.pause = null;
+    broadcastRoom(room);
+    scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+  }, RESUME_COUNTDOWN_MS);
+}
+
+function kickDisconnectedPlayer(room, seat, name) {
+  if (!room.engine) return;
+  if (!room.humanSeats.has(seat)) return;
+  if (isConnectedHuman(room, seat)) return;
+  room.humanSeats.delete(seat);
+  const player = room.players.find((p) => p.seat === seat);
+  if (player) {
+    player.kicked = true;
+    player.ws = null;
+    player.connected = false;
+  }
+  const botName = `BotPro${seat + 1}`;
+  room.engine.players[seat].name = botName;
+  room.engine.botLevels[seat] = "Pro";
+  startResumeCountdown(room, { phase: "kicked", seat, name, until: now() + RESUME_COUNTDOWN_MS, botName });
+}
+
+function pauseForDisconnect(room, seat, name) {
+  if (!room.started || !room.engine) return;
+  if (room.pause) return;
+  stopBotRunner(room);
+  const until = now() + RECONNECT_WINDOW_MS;
+  room.pause = { phase: "waiting", seat, name, until, botName: null };
+  broadcastRoom(room);
+  room.kickTimer = setTimeout(() => {
+    room.kickTimer = null;
+    if (!room.pause || room.pause.phase !== "waiting") return;
+    kickDisconnectedPlayer(room, seat, name);
+  }, RECONNECT_WINDOW_MS);
 }
 
 function createRoom(maxHumans) {
@@ -189,6 +301,11 @@ function createRoom(maxHumans) {
     lastActivityAt: now(),
     hostToken: null,
     dealerSeat: 0,
+    botRunning: false,
+    botTimer: null,
+    pause: null,
+    kickTimer: null,
+    pauseTimer: null,
   };
 }
 
@@ -218,8 +335,8 @@ function startMatch(room) {
   for (const [k, v] of quickQueues.entries()) {
     if (v === room.id) quickQueues.delete(k);
   }
-  advanceBots(room);
   broadcastRoom(room);
+  scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
 }
 
 const rooms = new Map();
@@ -246,14 +363,14 @@ setInterval(cleanupRooms, 30 * 1000).unref();
 
 function attachClientToRoom(ws, room, seat, name, token) {
   const existing = room.players.find((p) => p.seat === seat);
-  const entry = existing ?? { ws: null, seat, name, token, connected: false, disconnectedAt: null };
+  const entry = existing ?? { ws: null, seat, name, token, connected: false, disconnectedAt: null, kicked: false };
   entry.ws = ws;
   entry.name = name;
   entry.token = token;
   entry.connected = true;
   entry.disconnectedAt = null;
   if (!existing) room.players.push(entry);
-  room.humanSeats.add(seat);
+  if (!entry.kicked) room.humanSeats.add(seat);
   if (!room.hostToken) room.hostToken = token;
   clientInfo.set(ws, { roomId: room.id, seat, token });
   room.lastActivityAt = now();
@@ -282,8 +399,12 @@ function dropClient(ws) {
   room.lastActivityAt = now();
   if (!room.started) broadcastRoom(room);
   if (room.started) {
-    advanceBots(room);
+    if (player && !player.kicked && room.humanSeats.has(player.seat) && !room.pause) {
+      pauseForDisconnect(room, player.seat, player.name);
+      return;
+    }
     broadcastRoom(room);
+    scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
   }
 }
 
@@ -373,6 +494,10 @@ wss.on("connection", (ws) => {
         json(ws, { type: "error", message: "Sessione scaduta" });
         return;
       }
+      if (player.kicked) {
+        json(ws, { type: "error", message: "Sei stato espulso per time-out" });
+        return;
+      }
       if (player.ws && player.ws !== ws) {
         try {
           player.ws.close();
@@ -382,8 +507,12 @@ wss.on("connection", (ws) => {
       }
       attachClientToRoom(ws, room, player.seat, player.name, player.token);
       if (room.started) {
-        advanceBots(room);
-        broadcastRoom(room);
+        if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
+          startResumeCountdown(room, { phase: "resume", seat: player.seat, name: player.name, until: now() + RESUME_COUNTDOWN_MS, botName: null });
+        } else {
+          broadcastRoom(room);
+          scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
+        }
       }
       return;
     }
@@ -448,7 +577,6 @@ wss.on("connection", (ws) => {
       }
       room.lastActivityAt = now();
       startMatch(room);
-      broadcastRoom(room);
       return;
     }
 
@@ -536,6 +664,11 @@ wss.on("connection", (ws) => {
         json(ws, { type: "error", message: "Partita non pronta" });
         return;
       }
+      stopBotRunner(room);
+      if (room.pause) {
+        json(ws, { type: "error", message: "Partita in pausa: attendi la riconnessione" });
+        return;
+      }
 
       const seat = info.seat;
       const engine = room.engine;
@@ -558,8 +691,8 @@ wss.on("connection", (ws) => {
           return;
         }
         engine.trumpSuit = suit;
-        advanceBots(room);
         broadcastRoom(room);
+        scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
         return;
       }
 
@@ -569,8 +702,8 @@ wss.on("connection", (ws) => {
           return;
         }
         engine.continueToNextRound();
-        advanceBots(room);
         broadcastRoom(room);
+        scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
         return;
       }
 
@@ -585,8 +718,8 @@ wss.on("connection", (ws) => {
           json(ws, { type: "error", message: "Passata non valida" });
           return;
         }
-        advanceBots(room);
         broadcastRoom(room);
+        scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
         return;
       }
 
@@ -601,8 +734,8 @@ wss.on("connection", (ws) => {
           json(ws, { type: "error", message: "Mossa non valida" });
           return;
         }
-        advanceBots(room);
         broadcastRoom(room);
+        scheduleBotRunner(room, BOT_MOVE_DELAY_MS);
         return;
       }
     }
