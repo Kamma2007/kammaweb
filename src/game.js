@@ -235,7 +235,7 @@ export class GameEngine {
     this.deal();
     this.players.forEach((p) => sortHand(p.hand));
 
-    const first = seatToRight(this.dealer);
+    const first = nextSeatClockwise(this.dealer);
     this.currentPlayer = first;
 
     if (this.currentRound.startsWith("DECLARATION_")) {

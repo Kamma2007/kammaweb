@@ -7,13 +7,14 @@ import { WebSocketServer } from "ws";
 import { GameEngine } from "../src/game.js";
 
 const port = Number(process.env.PORT ?? 8787);
-const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
-const ROOM_IDLE_TTL_MS = 15 * 60 * 1000;
+const DISCONNECT_GRACE_MS = 30 * 60 * 1000;
+const ROOM_IDLE_TTL_MS = 60 * 60 * 1000;
 const SUITS = new Set(["hearts", "diamonds", "clubs", "spades"]);
 const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const BOT_MOVE_DELAY_MS = 700;
 const BOT_TRICK_PAUSE_MS = 2000;
 const RECONNECT_WINDOW_MS = 60 * 1000;
+const ALL_DISCONNECT_WINDOW_MS = 15 * 60 * 1000;
 const RESUME_COUNTDOWN_MS = 3 * 1000;
 
 function now() {
@@ -302,6 +303,22 @@ function pauseForDisconnect(room, seat, name) {
   }, RECONNECT_WINDOW_MS);
 }
 
+function pauseForAllDisconnect(room) {
+  if (!room.started || !room.engine) return;
+  stopBotRunner(room);
+  clearPause(room);
+  room.pause = { phase: "waiting_all", seat: null, name: "Tutti i giocatori", until: now() + ALL_DISCONNECT_WINDOW_MS, botName: null, rejoinCode: null };
+  broadcastRoom(room);
+  room.kickTimer = setTimeout(() => {
+    room.kickTimer = null;
+    if (!room.pause || room.pause.phase !== "waiting_all") return;
+    const connectedHumans = room.players.filter((p) => room.humanSeats.has(p.seat) && p.connected).length;
+    if (connectedHumans > 0) return;
+    clearPause(room);
+    broadcastRoom(room);
+  }, ALL_DISCONNECT_WINDOW_MS);
+}
+
 function createRoom(maxHumans) {
   let id = roomCode();
   while (rooms.has(id)) id = roomCode();
@@ -415,6 +432,11 @@ function dropClient(ws) {
   room.lastActivityAt = now();
   if (!room.started) broadcastRoom(room);
   if (room.started) {
+    const connectedHumans = room.players.filter((p) => room.humanSeats.has(p.seat) && p.connected).length;
+    if (connectedHumans === 0) {
+      pauseForAllDisconnect(room);
+      return;
+    }
     if (player && !player.kicked && room.humanSeats.has(player.seat) && !room.pause) {
       pauseForDisconnect(room, player.seat, player.name);
       return;
@@ -533,6 +555,9 @@ wss.on("connection", (ws) => {
       }
       if (room.started) {
         if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
+          beginResumeCountdown(room, player.seat, player.name);
+          attachClientToRoom(ws, room, player.seat, player.name, player.token);
+        } else if (room.pause?.phase === "waiting_all") {
           beginResumeCountdown(room, player.seat, player.name);
           attachClientToRoom(ws, room, player.seat, player.name, player.token);
         } else {
@@ -681,6 +706,9 @@ wss.on("connection", (ws) => {
             if (room.pause?.phase === "waiting" && room.pause.seat === player.seat) {
               beginResumeCountdown(room, player.seat, player.name);
               attachClientToRoom(ws, room, player.seat, player.name, player.token);
+            } else if (room.pause?.phase === "waiting_all") {
+              beginResumeCountdown(room, player.seat, player.name);
+              attachClientToRoom(ws, room, player.seat, player.name, player.token);
             } else {
               attachClientToRoom(ws, room, player.seat, player.name, player.token);
               broadcastRoom(room);
@@ -705,6 +733,9 @@ wss.on("connection", (ws) => {
             }
           }
           if (room.pause?.phase === "waiting" && room.pause.seat === found.seat) {
+            beginResumeCountdown(room, found.seat, found.name);
+            attachClientToRoom(ws, room, found.seat, found.name, found.token);
+          } else if (room.pause?.phase === "waiting_all") {
             beginResumeCountdown(room, found.seat, found.name);
             attachClientToRoom(ws, room, found.seat, found.name, found.token);
           } else {

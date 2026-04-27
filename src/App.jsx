@@ -51,6 +51,10 @@ function nextSeatToRight(seat) {
   return (seat + 3) % 4;
 }
 
+function nextSeatToLeft(seat) {
+  return (seat + 1) % 4;
+}
+
 function LastHandStrip({ trick, winnerName }) {
   if (!trick?.length) return null;
   return (
@@ -345,7 +349,16 @@ function App() {
         return;
       }
       const session = loadOnlineSession();
-      if (session?.roomId && session?.sessionToken && !onlineRoom) ws.send(JSON.stringify({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken }));
+      const shouldAutoResume = (screen === "onlineGame" || showOnlineSetup) && session?.roomId && session?.sessionToken;
+      if (shouldAutoResume) {
+        setOnlineMoveInFlight(true);
+        armOnlineRequestTimeout();
+        try {
+          ws.send(JSON.stringify({ type: "resume", roomId: session.roomId, sessionToken: session.sessionToken }));
+        } catch {
+          // ignore
+        }
+      }
     };
     ws.onmessage = (evt) => {
       let msg;
@@ -866,13 +879,15 @@ function App() {
   const onlinePauseText =
     onlinePause?.phase === "waiting"
       ? `${onlinePause?.name ?? "Giocatore"} si è disconnesso`
+      : onlinePause?.phase === "waiting_all"
+        ? "Connessione persa: tutti i giocatori disconnessi"
       : onlinePause?.phase === "resume"
         ? `${onlinePause?.name ?? "Giocatore"} riconnesso`
         : onlinePause?.phase === "kicked"
           ? `${onlinePause?.name ?? "Giocatore"} espulso per time-out`
           : "Partita in pausa";
   const onlineLobbyDealerSeat = Number.isFinite(Number(onlineRoom?.dealerSeat)) ? Number(onlineRoom?.dealerSeat) : 0;
-  const onlineLobbyFirstSeat = nextSeatToRight(onlineLobbyDealerSeat);
+  const onlineLobbyFirstSeat = nextSeatToLeft(onlineLobbyDealerSeat);
 
   return (
     <div className="app-root">
@@ -946,7 +961,7 @@ function App() {
               <div className="modal">
                 <h3>Gioca in Solo</h3>
                 <div className="pill" style={{ display: "inline-block", marginBottom: 10 }}>
-                  Mazziere: {game.players[soloDealerSeat]?.name} · Primo di mano: {game.players[nextSeatToRight(soloDealerSeat)]?.name}
+                  Mazziere: {game.players[soloDealerSeat]?.name} · Primo di mano: {game.players[nextSeatToLeft(soloDealerSeat)]?.name}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "center", justifyItems: "center", marginBottom: 10 }}>
                   <div />
@@ -957,7 +972,7 @@ function App() {
                       borderColor:
                         soloDealerSeat === 2
                           ? "rgba(255,215,0,0.55)"
-                          : nextSeatToRight(soloDealerSeat) === 2
+                          : nextSeatToLeft(soloDealerSeat) === 2
                             ? "rgba(0,200,255,0.45)"
                             : undefined,
                     }}
@@ -972,7 +987,7 @@ function App() {
                       borderColor:
                         soloDealerSeat === 1
                           ? "rgba(255,215,0,0.55)"
-                          : nextSeatToRight(soloDealerSeat) === 1
+                          : nextSeatToLeft(soloDealerSeat) === 1
                             ? "rgba(0,200,255,0.45)"
                             : undefined,
                     }}
@@ -989,7 +1004,7 @@ function App() {
                       borderColor:
                         soloDealerSeat === 3
                           ? "rgba(255,215,0,0.55)"
-                          : nextSeatToRight(soloDealerSeat) === 3
+                          : nextSeatToLeft(soloDealerSeat) === 3
                             ? "rgba(0,200,255,0.45)"
                             : undefined,
                     }}
@@ -1004,7 +1019,7 @@ function App() {
                       borderColor:
                         soloDealerSeat === 0
                           ? "rgba(255,215,0,0.55)"
-                          : nextSeatToRight(soloDealerSeat) === 0
+                          : nextSeatToLeft(soloDealerSeat) === 0
                             ? "rgba(0,200,255,0.45)"
                             : undefined,
                     }}
@@ -1332,7 +1347,7 @@ function App() {
           <div className="chips">
             <div className="chip">Turno: {p[game.currentPlayer]?.name}</div>
             <div className="chip">Mazziere: {p[game.dealer]?.name}</div>
-            <div className="chip">Primo: {p[nextSeatToRight(game.dealer)]?.name}</div>
+            <div className="chip">Primo: {p[nextSeatToLeft(game.dealer)]?.name}</div>
             {game.trumpSuit ? <div className="chip">Briscola: {suitLabel(game.trumpSuit)}</div> : null}
             {forbidden ? <div className="chip">Blocco {suitLabel(forbidden)}: {broken ? "sbloccato" : "attivo"}</div> : null}
             {round === "DOMINO" ? <div className="chip">Primo: 7 di Denari</div> : null}
@@ -1596,7 +1611,7 @@ function App() {
               <div className="chips">
                 <div className="chip">Turno: {onlinePlayersUi[onlineSeatToUi(onlineGame.currentPlayer)]?.name}</div>
                 <div className="chip">Mazziere: {onlinePlayersUi[onlineSeatToUi(onlineGame.dealer)]?.name}</div>
-                <div className="chip">Primo: {onlinePlayersUi[onlineSeatToUi(nextSeatToRight(onlineGame.dealer))]?.name}</div>
+                <div className="chip">Primo: {onlinePlayersUi[onlineSeatToUi(nextSeatToLeft(onlineGame.dealer))]?.name}</div>
                 {onlineGame.trumpSuit ? <div className="chip">Briscola: {suitLabel(onlineGame.trumpSuit)}</div> : onlineWaitingTrump ? <div className="chip">Briscola: da scegliere</div> : null}
                 {onlineForbiddenLeadSuit() ? (
                   <div className="chip">
@@ -1660,7 +1675,7 @@ function App() {
                     Codice rientro: {onlinePauseRejoinCode}
                   </div>
                 ) : null}
-                {onlinePause.phase === "waiting" ? (
+                {onlinePause.phase === "waiting" || onlinePause.phase === "waiting_all" ? (
                   <div className="pill" style={{ display: "inline-block", marginTop: 10 }}>
                     Rientro entro {onlinePauseSeconds}s
                   </div>
