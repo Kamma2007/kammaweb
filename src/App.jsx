@@ -208,7 +208,7 @@ function App() {
   const [savedThisGame, setSavedThisGame] = useState(false);
   const [showSoloSetup, setShowSoloSetup] = useState(false);
   const [showRules, setShowRules] = useState(false);
-  const [soloDealerSeat, setSoloDealerSeat] = useState(1);
+  const [soloDealerSeat, setSoloDealerSeat] = useState(3);
   const [showOnlineSetup, setShowOnlineSetup] = useState(false);
   const [onlineTab, setOnlineTab] = useState("quick");
   const [onlineName, setOnlineName] = useState(() => loadOnlineSession()?.name ?? "Giocatore");

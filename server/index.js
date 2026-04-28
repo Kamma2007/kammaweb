@@ -333,7 +333,7 @@ function createRoom(maxHumans) {
     engine: null,
     lastActivityAt: now(),
     hostToken: null,
-    dealerSeat: 0,
+    dealerSeat: 3,
     botRunning: false,
     botTimer: null,
     pause: null,
