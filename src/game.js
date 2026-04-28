@@ -580,7 +580,7 @@ export class GameEngine {
 
     this.pendingNextRound = false;
     this.currentRoundIndex++;
-    this.dealer = seatToRight(this.dealer);
+    this.dealer = nextSeatClockwise(this.dealer);
     this.startRound();
     return true;
   }
