@@ -16,6 +16,7 @@ const BOT_TRICK_PAUSE_MS = 2000;
 const RECONNECT_WINDOW_MS = 60 * 1000;
 const ALL_DISCONNECT_WINDOW_MS = 15 * 60 * 1000;
 const RESUME_COUNTDOWN_MS = 3 * 1000;
+const WS_HEARTBEAT_MS = 20 * 1000;
 
 function now() {
   return Date.now();
@@ -505,9 +506,33 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, path: "/ws" });
+
+wss.on("close", () => {
+});
+
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      try {
+        ws.terminate();
+      } catch {
+      }
+      return;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch {
+    }
+  });
+}, WS_HEARTBEAT_MS);
 
 wss.on("connection", (ws) => {
+  ws.isAlive = true;
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
   ws.on("message", (raw) => {
     let msg;
     try {

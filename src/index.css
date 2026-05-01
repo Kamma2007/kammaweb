@@ -718,6 +718,20 @@ body {
   margin-top: 12px;
 }
 
+.mini-hand {
+  display: flex;
+  gap: 6px;
+  padding: 10px 2px 6px;
+  overflow-x: auto;
+}
+
+.mini-card {
+  height: 64px;
+  width: auto;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+
 .score-grid {
   display: grid;
   gap: 8px;

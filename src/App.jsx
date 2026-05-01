@@ -265,7 +265,7 @@ function App() {
       return raw;
     }
     const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-    if (isLocal) return `${proto}://${location.hostname}:8787`;
+    if (isLocal) return `${proto}://${location.hostname}:8787/ws`;
     return `${proto}://${location.host}/ws`;
   };
 
@@ -415,7 +415,6 @@ function App() {
     };
     ws.onclose = () => {
       wsRef.current = null;
-      setOnlineRoom(null);
       setOnlineMoveInFlight(false);
       setOnlineConnected(false);
       if (onlinePingTimerRef.current) {
@@ -1808,6 +1807,11 @@ function App() {
               <div className="overlay">
                 <div className="modal">
                   <h3>Scegli la briscola</h3>
+                  <div className="mini-hand" aria-label="Le tue carte">
+                    {onlineGame.yourHand.map((c) => (
+                      <img key={`${c.suit}-${c.value}`} className="mini-card" src={cardImageUrl(c)} alt={cardLabel(c)} />
+                    ))}
+                  </div>
                   <div className="suits">
                     <button className="suit-btn" onClick={() => onlineChooseTrump("hearts")} disabled={onlineMoveInFlight}>
                       <span>Cuori</span>
